@@ -1,0 +1,157 @@
+{
+  "version": "1.0.4",
+  "version_code": 104,
+  "note": "Keep historical ZIP metadata to reproduce the installed 1.0.4 release.",
+  "expected_md5": "26d93f1491f31a8bb8411afbe4374392",
+  "expected_sha256": "198a2627431c36552bf1272df9073dec2c42eafee4a923ec33cded1c68a1c28b",
+  "toolchains": {
+    "python": "3.12.10",
+    "jdk": "17.0.12",
+    "build_tools": "35.0.0",
+    "platform": "android-35",
+    "ndk": "27.3.13750724",
+    "flex": "2.6.4"
+  },
+  "tool_files": {
+    "platforms/android-35/android.jar": "4566663c3876e022b4fa4ced8c8697c4ab1688267f090114fd92d027b32e619b",
+    "build-tools/35.0.0/aapt2.exe": "cbfe5deda5f7074ce47b6f33818b456ee8046a076a11af13e29c837d3c80c564",
+    "build-tools/35.0.0/zipalign.exe": "aa2475ce201962b871fb8daec020da03fd6292c9c1f422cd0fe2e39b20d4f673",
+    "build-tools/35.0.0/lib/d8.jar": "305622ad00535684534eb8f742cbf5e628a9abc09d8ea4d39d1babb95bf0cee5",
+    "build-tools/35.0.0/lib/apksigner.jar": "00ef9948f843fe395d2440ae3ef41405b8040a6d5d46493bd1902ac0ee6deae7"
+  },
+  "java_sources": [
+    "app/src/dev/rompolicy/merge/Cil.java",
+    "app/src/dev/rompolicy/merge/ContextPriority.java",
+    "app/src/dev/rompolicy/merge/Engine.java",
+    "app/src/dev/rompolicy/merge/ExtraRules.java",
+    "app/src/dev/rompolicy/merge/MainActivity.java",
+    "app/src/dev/rompolicy/merge/MergeService.java",
+    "app/src/dev/rompolicy/merge/RootWorker.java",
+    "app/src/dev/rompolicy/merge/RuntimeLog.java",
+    "app/src/dev/rompolicy/merge/WorkerLaunch.java"
+  ],
+  "entries": [
+    {
+      "name": "AndroidManifest.xml",
+      "date_time": [
+        1980,
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      "compression": 8,
+      "create_system": 0,
+      "external_attr": 0,
+      "sha256": "4611e64b53dc27f09aa2f718684b1843d9af64363b914bd6c267f0625b2f027e"
+    },
+    {
+      "name": "resources.arsc",
+      "date_time": [
+        1980,
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      "compression": 0,
+      "create_system": 0,
+      "external_attr": 0,
+      "sha256": "1fa3cb291285348ec1b33c85e7317d989467707f4791c4e5302f2d312d1e18c8"
+    },
+    {
+      "name": "classes.dex",
+      "date_time": [
+        2026,
+        10,
+        1,
+        20,
+        53,
+        48
+      ],
+      "compression": 8,
+      "create_system": 0,
+      "external_attr": 2176188416,
+      "sha256": "4f66a6c17287bfef10095d30908016004209d2f34139abca40886af963d489c4"
+    },
+    {
+      "name": "lib/arm64-v8a/libpolicytool.so",
+      "date_time": [
+        2026,
+        10,
+        1,
+        17,
+        2,
+        18
+      ],
+      "compression": 8,
+      "create_system": 0,
+      "external_attr": 2176188416,
+      "sha256": "a061192a4d852f7f8c5d022bd44d94314a54bf8d37a5e4d1243ffeafc4544db9"
+    },
+    {
+      "name": "lib/arm64-v8a/libsecilc.so",
+      "date_time": [
+        2026,
+        10,
+        1,
+        17,
+        2,
+        18
+      ],
+      "compression": 8,
+      "create_system": 0,
+      "external_attr": 2176188416,
+      "sha256": "6c6c2d1dc53badf8123bf898641d520fafac9d4cef9375bfd5d32949d86fd9ec"
+    },
+    {
+      "name": "assets/licenses/libsepol-LICENSE.txt",
+      "date_time": [
+        2026,
+        10,
+        1,
+        16,
+        27,
+        44
+      ],
+      "compression": 8,
+      "create_system": 0,
+      "external_attr": 2176188416,
+      "sha256": "3a872bea527c9329f6aee2182de19bc40c5d030f1e08296e45d4bc3218946cd4"
+    },
+    {
+      "name": "assets/licenses/provenance.json",
+      "date_time": [
+        2026,
+        10,
+        1,
+        17,
+        2,
+        18
+      ],
+      "compression": 8,
+      "create_system": 0,
+      "external_attr": 2176188416,
+      "sha256": "8d12aab9e3ed30f08dfa4c818e3cd8904554e740e6fa152d8ce716ac0a4227ab"
+    },
+    {
+      "name": "assets/licenses/secilc-LICENSE.txt",
+      "date_time": [
+        2026,
+        10,
+        1,
+        16,
+        27,
+        44
+      ],
+      "compression": 8,
+      "create_system": 0,
+      "external_attr": 2176188416,
+      "sha256": "eb78e1234973164aca2ae59e873b6f928b8cc3aaa6b1437b80e70e070ac24e72"
+    }
+  ],
+  "selinux_commit": "a8c5e74f85f869bf236a01ba24181b78f5e39a52",
+  "generated_lexer_sha256": "f22b2dbe2d3ce153e58cae350ef8b6c3b1a9329cfdb240f46718084b4dea81ae"
+}

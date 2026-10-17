@@ -1,0 +1,14 @@
+/build/
+/dist/
+/signing/
+/app/lib/
+__pycache__/
+*.pyc
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+*.idsig
+.env
+

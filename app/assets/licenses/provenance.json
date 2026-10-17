@@ -1,0 +1,7 @@
+{
+  "repository": "https://android.googlesource.com/platform/external/selinux",
+  "commit": "a8c5e74f85f869bf236a01ba24181b78f5e39a52",
+  "abi": "arm64-v8a",
+  "api": 28,
+  "static": true
+}

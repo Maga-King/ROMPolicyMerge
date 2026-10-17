@@ -1,0 +1,14 @@
+* text=auto eol=lf
+*.py text eol=lf
+*.java text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.l text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+app/assets/** -text
+native/generated/cil_lexer.c -text
+*.so binary
+*.apk binary
+
