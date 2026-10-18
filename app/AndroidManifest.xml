@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.rompolicy.merge" android:versionCode="104" android:versionName="1.0.4">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.rompolicy.merge" android:versionCode="105" android:versionName="1.0.5">
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />

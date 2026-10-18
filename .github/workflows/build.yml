@@ -40,7 +40,7 @@ jobs:
         id: artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ROMPolicyMerge-v1.0.4-arm64
+          name: ROMPolicyMerge-v1.0.5-arm64
           if-no-files-found: error
           path: |
             dist/*.apk

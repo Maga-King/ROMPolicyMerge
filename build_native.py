@@ -7,9 +7,11 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent
-LOCK = json.loads((ROOT / 'build-config/release-1.0.4.json').read_text(encoding='utf-8'))
+VERSION = ET.parse(ROOT / 'app/AndroidManifest.xml').getroot().attrib['{http://schemas.android.com/apk/res/android}versionName']
+LOCK = json.loads((ROOT / ('build-config/release-' + VERSION + '.json')).read_text(encoding='utf-8'))
 LIB = ROOT / 'third_party/selinux/libsepol'
 OUT = ROOT / 'build/native'
 NDK = Path(os.environ.get('ANDROID_NDK_HOME') or os.environ.get('ANDROID_NDK_ROOT') or

@@ -15,6 +15,7 @@ public final class Engine {
     final Path job,toolDir;final JSONObject request;final LinkedHashMap<String,byte[]> originals=new LinkedHashMap<>(),candidate=new LinkedHashMap<>();
     final Map<String,String> dirs=new LinkedHashMap<>();final List<Cil.Merger> mergers=new ArrayList<>();
     final Set<String> deletions=new LinkedHashSet<>();final Map<String,Integer> counts=new TreeMap<>();
+    final Map<String,Integer> reasons=new TreeMap<>();final JSONObject validation=new JSONObject();
     Path target,source;BufferedWriter audit;int commandId=0,notes=0;String version,compileVersion;boolean committing=false;
     public Engine(Path j,Path tools,JSONObject req){job=j;toolDir=tools;request=req;}
     static byte[] bytes(Path p)throws IOException {long n=Files.size(p);if(n>128L*1024*1024)throw new IOException("File too large: "+p);return Files.readAllBytes(p);}
@@ -32,7 +33,8 @@ public final class Engine {
     public void log(String s){System.out.println(s);System.out.flush();}
     void memory(String stage){Runtime r=Runtime.getRuntime();log("内存状态（"+stage+"）：Java 已用 "+(r.totalMemory()-r.freeMemory())/1048576+" MiB，上限 "+r.maxMemory()/1048576+" MiB");}
     void note(String status,String origin,Cil.N n,String why){try{
-        counts.merge(status,1,Integer::sum);JSONObject r=new JSONObject().put("status",status).put("source",origin).put("reason",why);if(n!=null)r.put("rule",n.text());audit.write(r.toString());audit.newLine();
+        counts.merge(status,1,Integer::sum);if(status.equals("SKIPPED")||status.equals("FILTERED")||status.equals("COMPILER_CONFLICT"))reasons.merge(status+": "+why,1,Integer::sum);
+        JSONObject r=new JSONObject().put("status",status).put("source",origin).put("reason",why);if(n!=null)r.put("rule",n.text());audit.write(r.toString());audit.newLine();
         if(++notes%5000==0){audit.flush();log("合并进度：已分析 "+notes+" 项，新增 "+counts.getOrDefault("ADDED",0)+"，按设置排除 "+counts.getOrDefault("EXCLUDED",0)+"，不兼容跳过 "+counts.getOrDefault("SKIPPED",0)+"，无效权限处理 "+counts.getOrDefault("FILTERED",0));}
         if(status.equals("FILTERED")&&counts.get(status)<=12)log("权限筛选："+why);
     }catch(Exception e){throw new RuntimeException(e);}}
@@ -56,12 +58,19 @@ public final class Engine {
     }
     static String tail(String s,int n){return s.length()>n?s.substring(s.length()-n):s;}
     Map<String,String> discover(Path base)throws Exception{
+        return discover(base,true);
+    }
+    Map<String,String> discover(Path base,boolean requirePlatform)throws Exception{
         Map<String,String> out=new LinkedHashMap<>();
         for(String part:Arrays.asList("system","system_ext","product","vendor","odm")){
             List<String> tryPaths=part.equals("system")?Arrays.asList("system/system/etc/selinux","system/etc/selinux"):Arrays.asList(part+"/etc/selinux");
-            for(String rel:tryPaths)if(Files.isDirectory(base.resolve(rel),LinkOption.NOFOLLOW_LINKS)){canonical(base.resolve(rel));out.put(part,rel);break;}
+            for(String rel:tryPaths)if(Files.isDirectory(base.resolve(rel),LinkOption.NOFOLLOW_LINKS)){
+                canonical(base.resolve(rel));
+                if(part.equals("system")&&!Files.isRegularFile(base.resolve(rel+"/plat_sepolicy.cil"),LinkOption.NOFOLLOW_LINKS))continue;
+                out.put(part,rel);break;
+            }
         }
-        if(!out.containsKey("system")||!out.containsKey("vendor"))throw new IOException("需要完整的 system 和 vendor 策略目录；不接受单独 CIL 或镜像文件");
+        if(!out.containsKey("vendor")||(requirePlatform&&!out.containsKey("system")))throw new IOException(requirePlatform?"目标需要 system 平台 CIL 和 vendor；OTA 模式仍需平台策略参与只读验证":"来源至少需要 vendor/etc/selinux；允许来源缺少 system，不借用或伪造来源平台");
         return out;
     }
     void snapshot()throws Exception{
@@ -104,6 +113,7 @@ public final class Engine {
         String file=ds.get("system")+"/plat_sepolicy_genfs_"+gen+".cil";if(fs.containsKey(file))ins.add(file);
     }
     String destination(String srcPart,boolean debug)throws IOException{
+        if(request.optString("write_scope","all").equals("vendor_odm")&&!Arrays.asList("vendor","odm").contains(srcPart))srcPart="vendor";
         String part=dirs.containsKey(srcPart)?srcPart:"vendor";String f=dirs.get(part)+"/"+prefix(part)+"_sepolicy.cil";
         if(debug){String d=dirs.get(part)+"/"+prefix(part)+"_sepolicy_debug.cil";
             if(part.equals("system")&&dirs.containsKey("system_ext")&&originals.containsKey(dirs.get("system_ext")+"/plat_sepolicy_debug.cil"))d=dirs.get("system_ext")+"/plat_sepolicy_debug.cil";
@@ -122,13 +132,16 @@ public final class Engine {
         // types that exist only in its own platform file. Keep BOTH directions isolated.
         String vendor=dirs.get("vendor")+"/vendor_sepolicy"+(debug?"_debug":"")+".cil";
         if(chosen.contains(vendor)&&!other.contains(vendor))return vendor;
-        for(String f:chosen)if(f.endsWith(debug?"_sepolicy_debug.cil":"_sepolicy.cil")&&!other.contains(f))return f;
+        for(String f:chosen)if(writable(f)&&f.endsWith(debug?"_sepolicy_debug.cil":"_sepolicy.cil")&&!other.contains(f))return f;
         throw new IOException("目标没有可独立承载本变体新增规则的 CIL，停止以免普通/debug 策略相互污染");
     }
     Map<String,byte[]> readSource(Map<String,String> ds)throws Exception{
-        Map<String,byte[]> all=new LinkedHashMap<>();
+        Map<String,byte[]> all=new LinkedHashMap<>();long total=0;
         for(String dir:ds.values())try(java.util.stream.Stream<Path> st=Files.walk(source.resolve(dir))){
-            for(Path p:(Iterable<Path>)st::iterator){canonical(p);if(Files.isDirectory(p))continue;if(!Files.isRegularFile(p))throw new IOException("来源含特殊文件");String n=p.getFileName().toString();if(n.endsWith(".cil")||n.endsWith("_contexts")||n.endsWith("version.txt")||n.equals("plat_sepolicy_vers.txt"))all.put(source.relativize(p).toString(),bytes(p));}
+            for(Path p:(Iterable<Path>)st::iterator){canonical(p);if(Files.isDirectory(p))continue;if(!Files.isRegularFile(p))throw new IOException("来源含特殊文件");String n=p.getFileName().toString();if(n.endsWith(".cil")||n.endsWith("_contexts")||n.endsWith("version.txt")||n.equals("plat_sepolicy_vers.txt")){
+                if(all.size()>=4096||(total+=Files.size(p))>192L*1024*1024)throw new IOException("来源策略快照过大");
+                String rel=source.relativize(p).toString();byte[] data=bytes(p);all.put(rel,data);write(job.resolve("source").resolve(rel),data);
+            }}
         }return all;
     }
     static final class PolicySource {
@@ -180,25 +193,52 @@ public final class Engine {
         for(String p:ins)Cil.parse(text(candidate.get(p)),i::add);return i;
     }
     Cil.Index contextIndex()throws Exception{
-        Cil.Index i=new Cil.Index();List<String> ins=inputs(dirs,candidate.keySet(),version,false);addGenfs(ins,dirs,candidate);
+        return contextIndex(false);
+    }
+    Cil.Index contextIndex(boolean debug)throws Exception{
+        Cil.Index i=new Cil.Index();List<String> ins=inputs(dirs,candidate.keySet(),version,debug);addGenfs(ins,dirs,candidate);
         // Context validation needs concrete type/alias names, not 400k access rules.
         for(String p:ins)Cil.parse(text(candidate.get(p)),n->{if(n.head().equals("type")||n.head().equals("typealiasactual"))i.add(n);});return i;
     }
     void mergeSource(Cil.Merger m,Map<String,String> sd,Map<String,byte[]> sf,boolean debug,String namespace,String originPrefix)throws Exception{
         String sv=text(sf.getOrDefault(sd.get("vendor")+"/plat_sepolicy_vers.txt",new byte[0])).trim();
+        if(!sv.matches("[0-9]{2,6}(?:\\.[0-9]+)?"))throw new IOException("来源缺少有效 plat_sepolicy_vers.txt: "+originPrefix);
         List<String> src=inputs(sd,sf.keySet(),sv,debug);addGenfs(src,sd,sf);
-        List<Cil.Entry> blocks=new ArrayList<>();int ns=0;
+        if(debug&&request.optBoolean("repair_debug",true)){
+            // Only device-side ordinary policy supplements debug. Platform variants stay isolated.
+            for(String p:inputs(sd,sf.keySet(),sv,false))if(ContextPriority.device(p,sd)&&!src.contains(p))src.add(p);
+        }
+        mergeFiles(m,sd,sf,src,debug,namespace,originPrefix);
+    }
+    void mergeFiles(Cil.Merger m,Map<String,String> sd,Map<String,byte[]> sf,List<String> src,boolean debug,String namespace,String originPrefix)throws Exception{
+        List<Cil.Entry> blocks=new ArrayList<>();
         // All declarations are processed before rules, across all source partitions.
         // Generated attributes get per-file namespaces before the global merge.
         for(String p:src){String part="vendor";for(Map.Entry<String,String> d:sd.entrySet())if(p.startsWith(d.getValue()+"/")){part=d.getKey();break;}
             String dest=variantDestination(part,debug);List<Cil.N> nodes=Cil.parse(text(sf.get(p)));Map<String,String> rename=new HashMap<>();
-            for(Cil.N n:nodes)if(n.head().equals("typeattribute")&&Cil.GENERATED.matcher(n.s(1)).matches())rename.put(n.s(1),"rpm_"+namespace+"_"+(debug?"d":"n")+"_"+ns+"_"+n.s(1));
-            for(Cil.N n:nodes)blocks.add(new Cil.Entry(dest,originPrefix+p,n.map(s->rename.getOrDefault(s,s))));ns++;
+            // Different ROMs reuse both file paths and generated attribute numbers.
+            // Fingerprint the generated membership graph, not the entire file: imported
+            // additions must not rename the target's original attributes on a repeat repair.
+            // Sorting also makes source statement order irrelevant to the namespace.
+            Set<String> generated=new HashSet<>();
+            for(Cil.N n:nodes)if(n.head().equals("typeattribute")&&Cil.GENERATED.matcher(n.s(1)).matches())generated.add(n.s(1));
+            Set<String> definitions=new TreeSet<>();
+            for(Cil.N n:nodes)if((n.head().equals("typeattribute")||n.head().equals("typeattributeset"))&&generated.contains(n.s(1)))definitions.add(n.text());
+            String fileId=hash((p+"\n"+String.join("\n",definitions)).getBytes(StandardCharsets.UTF_8));
+            for(Cil.N n:nodes)if(n.head().equals("typeattribute")&&Cil.GENERATED.matcher(n.s(1)).matches())rename.put(n.s(1),"rpm_"+namespace+"_"+fileId+"_"+n.s(1));
+            for(Cil.N n:nodes)blocks.add(new Cil.Entry(dest,originPrefix+p,n.map(s->rename.getOrDefault(s,s))));
         }
         m.merge(blocks,namespace+(debug?"debug":"normal"));
     }
     void mergeVariant(Map<String,String> sd,Map<String,byte[]> sf,boolean debug,PolicySource device)throws Exception{
         Cil.Index idx=index(debug);Cil.Merger m=new Cil.Merger(idx,this::note);m.permissive=request.optBoolean("permissive");m.hardwareLabels=request.optBoolean("hardware");m.targetVersion=version.replace(".","_");mergers.add(m);
+        if(debug&&request.optBoolean("repair_debug",true)){
+            // The current target may already contain a prior Xiaomi merge. Preserve it as the baseline.
+            List<String> selected=inputs(dirs,originals.keySet(),version,true),supplement=new ArrayList<>();
+            for(String p:inputs(dirs,originals.keySet(),version,false))if(ContextPriority.device(p,dirs)&&!selected.contains(p))supplement.add(p);
+            log("debug 补齐：读取当前目标及来源的普通 vendor/odm 规则；不将 debug 专用规则反灌普通版");
+            mergeFiles(m,dirs,originals,supplement,true,"targetnormal","目标普通版:");
+        }
         mergeSource(m,sd,sf,debug,"src","");
         if(device!=null){log("合并手机五分区 CIL，优先按分区归属；普通/debug 专用新增隔离存放，不导入展开后的整机运行策略");mergeSource(m,device.dirs,device.files,debug,"device","手机分区:/");}
         if(request.has("extra")&&!request.optString("extra").isEmpty()){
@@ -228,6 +268,19 @@ public final class Engine {
         while(refs.find())if(!idx.types.contains(refs.group(1))&&!idx.aliases.containsKey(refs.group(1)))return false;
         return true;
     }
+    boolean writable(String rel){
+        return !request.optString("write_scope","all").equals("vendor_odm")||ContextPriority.device(rel,dirs);
+    }
+    String contextDestination(String part,String filename,String kind){
+        String same=dirs.containsKey(part)?dirs.get(part)+"/"+filename:null;
+        if(same!=null&&writable(same)&&candidate.containsKey(same))return same;
+        if(!request.optString("write_scope","all").equals("vendor_odm"))return null;
+        for(String device:Arrays.asList("vendor","odm"))if(dirs.containsKey(device)){
+            String p=dirs.get(device)+"/"+device+"_"+kind;if(candidate.containsKey(p))return p;
+            p=dirs.get(device)+"/"+kind;if(candidate.containsKey(p))return p;
+        }
+        return null;
+    }
     void mergeContexts(Map<String,String> sd,Map<String,byte[]> sf)throws Exception{
         ContextPriority.resolve(candidate,dirs,this::note);
         Cil.Index idx=contextIndex();Map<String,Map<String,String>> existing=new HashMap<>();
@@ -251,9 +304,8 @@ public final class Engine {
         for(Map.Entry<String,String> part:sd.entrySet())for(Map.Entry<String,byte[]> e:sf.entrySet()){
             if(!e.getKey().startsWith(part.getValue()+"/"))continue;String k=kind(e.getKey());if(k==null||e.getKey().contains("/precompiled_"))continue;
             if((k.equals("file_contexts"))&&!request.optBoolean("hardware")){note("SKIPPED",e.getKey(),null,"硬件/文件标签默认保守；开启高级硬件标签选项才导入");continue;}
-            if(!dirs.containsKey(part.getKey())){note("SKIPPED",e.getKey(),null,"目标无对应分区，不新建分区/打包元数据");continue;}
-            String dest=dirs.get(part.getKey())+"/"+Paths.get(e.getKey()).getFileName();
-            if(!candidate.containsKey(dest)){note("SKIPPED",e.getKey(),null,"目标无此上下文文件，不创建未经 init 识别的新文件");continue;}
+            String dest=contextDestination(part.getKey(),Paths.get(e.getKey()).getFileName().toString(),k);
+            if(dest==null){note("SKIPPED",e.getKey(),null,"写入范围内没有此类正式上下文文件，不新建未经 init 识别的文件");continue;}
             Map<String,String> seen=existing.computeIfAbsent(k,z->new HashMap<>());StringBuilder b=new StringBuilder(text(candidate.get(dest)));int added=0;
             for(String line:lines(e.getValue())){
                 String key=contextKey(line,k);String old=seen.get(key);
@@ -266,7 +318,7 @@ public final class Engine {
                 if(line.startsWith("neverallow")){note("SKIPPED",e.getKey(),null,"不导入 seapp 断言");continue;}
                 Set<String> refs=new HashSet<>();Matcher labels=Pattern.compile("\\bu:[^:\\s]+:([^:\\s]+):").matcher(line);while(labels.find())refs.add(labels.group(1));
                 if(k.equals("seapp_contexts")){Matcher mm=Pattern.compile("(?:^|\\s)(?:domain|type)=(\\S+)").matcher(line);while(mm.find())refs.add(mm.group(1));}
-                if(!idx.types.containsAll(refs)){note("SKIPPED",e.getKey(),null,"上下文类型未定义: "+line);continue;}
+                if(!refs.stream().allMatch(t->idx.types.contains(t)||idx.aliases.containsKey(t))){note("SKIPPED",e.getKey(),null,"上下文类型未定义: "+line);continue;}
                 if(k.equals("property_contexts")){
                     String[] fields=line.split("\\s+");if(fields.length<2||fields.length>3&&!Arrays.asList("exact","prefix").contains(fields[2]))throw new IOException("来源属性上下文格式异常: "+line);
                     // Do not introduce a duplicate prefix differing only by legacy implicit prefix notation.
@@ -302,23 +354,51 @@ public final class Engine {
         stageCil();
     }
     boolean compile(boolean debug,int pass)throws Exception{
+        String variant=debug?"debug":"normal";
+        JSONObject status=new JSONObject().put("pass",pass).put("compiled",false).put("contexts_valid",false);
+        validation.put(variant,status);json(job.resolve("validation.json"),validation);
         List<String> ins=inputs(dirs,candidate.keySet(),version,debug);addGenfs(ins,dirs,candidate);
         Path binary=job.resolve(debug?"validated-debug.policy":"validated.policy");String policyVersion=selectCompileVersion();
+        status.put("inputs",new JSONArray(ins)).put("stage","compile").put("policy_version",policyVersion).put("neverallow_checked",false);
+        json(job.resolve("validation.json"),validation);
         List<String> cmd=new ArrayList<>(Arrays.asList(toolDir.resolve("libsecilc.so").toString(),"-v","-v","-m","-M","true","-G","-N","-c",policyVersion,"-o",binary.toString(),"-f",job.resolve("compiled_file_contexts"+(debug?"-debug":"")).toString()));
         for(String p:ins)cmd.add(job.resolve("candidate").resolve(p).toString());
         log("完整 "+(debug?"debug":"普通")+" 策略编译，第 "+pass+" 次（-N 不检查 neverallow）");String result=run(cmd,request.optBoolean("live")?900:240,false);
         if(!result.startsWith("EXIT=0\n")){
             for(Cil.Merger m:mergers)if(m.resolveTransitionConflict(result)){stageCil();return false;}
-            throw new IOException("完整策略编译失败，目标未写入。"+tail(result,2800));
+            throw new IOException(variant+" 完整策略编译失败，目标未写入。"+tail(result,2800));
         }
+        status.put("compiled",true).put("stage","readback");json(job.resolve("validation.json"),validation);
         run(Arrays.asList(toolDir.resolve("libpolicytool.so").toString(),"check",binary.toString()),90,true);
         run(Arrays.asList(toolDir.resolve("libpolicytool.so").toString(),"roundtrip",binary.toString(),binary.toString()+".roundtrip"),90,true);
         Set<String> contexts=new TreeSet<>();for(Map.Entry<String,byte[]> e:candidate.entrySet())if(kind(e.getKey())!=null)for(String line:lines(e.getValue())){
             if(line.startsWith("neverallow"))continue;
             Matcher m=Pattern.compile("\\bu:[^\\s]+:[^\\s]+").matcher(line);while(m.find())contexts.add(m.group());
         }
-        Path list=job.resolve("contexts-to-check.txt");write(list,(String.join("\n",contexts)+"\n").getBytes(StandardCharsets.UTF_8));
-        run(Arrays.asList(toolDir.resolve("libpolicytool.so").toString(),"contexts",binary.toString(),list.toString()),90,true);return true;
+        status.put("roundtrip",true).put("contexts",contexts.size()).put("stage","contexts");json(job.resolve("validation.json"),validation);
+        Path list=job.resolve("contexts-to-check-"+variant+".txt");write(list,(String.join("\n",contexts)+"\n").getBytes(StandardCharsets.UTF_8));
+        String checked=run(Arrays.asList(toolDir.resolve("libpolicytool.so").toString(),"contexts",binary.toString(),list.toString()),90,false);
+        status.put("contexts_valid",checked.startsWith("EXIT=0\n")).put("stage",checked.startsWith("EXIT=0\n")?"complete":"contexts_failed");json(job.resolve("validation.json"),validation);
+        if(!checked.startsWith("EXIT=0\n")){
+            Set<String> invalid=new TreeSet<>();Matcher bad=Pattern.compile("(?m)^INVALID_CONTEXT (\\S+)").matcher(checked);while(bad.find())invalid.add(bad.group(1));
+            writeContextDiagnosis(variant,invalid,checked);
+            throw new IOException(variant+" 标签校验失败："+invalid.size()+" 个无效标签（去重）；不删除正式标签、不伪造空 type。详见 contexts-invalid-"+variant+".json；另一套策略的声明不代表本套已定义。\n"+tail(checked,1200));
+        }
+        log(variant+"：编译、二进制回读和 "+contexts.size()+" 个标签均通过");return true;
+    }
+    void writeContextDiagnosis(String variant,Set<String> invalid,String output)throws Exception{
+        Cil.Index normal=contextIndex(false),debug=contextIndex(true);JSONArray rows=new JSONArray();
+        for(Map.Entry<String,byte[]> e:candidate.entrySet())if(kind(e.getKey())!=null){
+            int lineNo=0;for(String raw:text(e.getValue()).split("\\r?\\n",-1)){
+                lineNo++;for(String context:invalid)if(raw.contains(context)){
+                    String[] fields=context.split(":");String type=fields.length>2?fields[2]:"";
+                    rows.put(new JSONObject().put("file",e.getKey()).put("line",lineNo).put("context",context)
+                        .put("type",type).put("normal_cil_declares",normal.types.contains(type)||normal.aliases.containsKey(type))
+                        .put("debug_cil_declares",debug.types.contains(type)||debug.aliases.containsKey(type)));
+                }
+            }
+        }
+        json(job.resolve("contexts-invalid-"+variant+".json"),new JSONObject().put("variant",variant).put("invalid",new JSONArray(invalid)).put("references",rows).put("validator_output",output));
     }
     String selectCompileVersion()throws Exception{
         if(compileVersion!=null)return compileVersion;
@@ -337,14 +417,18 @@ public final class Engine {
     void unchanged()throws Exception{for(Map.Entry<String,byte[]> e:originals.entrySet()){Path p=target.resolve(e.getKey());canonical(p);if(!hash(bytes(p)).equals(hash(e.getValue())))throw new IOException("目标文件被其他工具修改，停止覆盖: "+p);}}
     void commit()throws Exception{
         LinkedHashMap<String,byte[]> changes=new LinkedHashMap<>();for(Map.Entry<String,byte[]> e:candidate.entrySet())if(!Arrays.equals(originals.get(e.getKey()),e.getValue()))changes.put(e.getKey(),e.getValue());
-        if(changes.isEmpty()){log("没有有效新增，目标保持不变");return;}
-        for(String p:originals.keySet())if(p.matches(".*?/precompiled_sepolicy(?:_debug)?"))deletions.add(p);
+        if(changes.isEmpty()){unchanged();log("没有有效新增，目标保持不变");return;}
+        for(String p:changes.keySet())if(!writable(p))throw new IOException("拒绝越过写入范围: "+p);
+        for(String p:originals.keySet())if(writable(p)&&p.matches(".*?/precompiled_sepolicy(?:_debug)?"))deletions.add(p);
+        if(request.optBoolean("validate_only")){unchanged();log("仅验证模式：候选已通过，未写回；计划修改 "+changes.size()+" 个文件，移出 "+deletions.size()+" 个旧二进制缓存");return;}
         unchanged();JSONArray list=new JSONArray();
         // Back up with cp -a as well as byte snapshots, preserving actual unpacked owner/mode/xattrs.
         Set<String> paths=new LinkedHashSet<>(changes.keySet());paths.addAll(deletions);
         for(String rel:paths){Path p=target.resolve(rel),bak=job.resolve("restore").resolve(rel);Files.createDirectories(bak.getParent());run(Arrays.asList("/system/bin/cp","-a",p.toString(),bak.toString()),30,true);
             if(!hash(bytes(bak)).equals(hash(originals.get(rel))))throw new IOException("备份校验失败: "+rel);
-            list.put(new JSONObject().put("path",rel).put("before",hash(originals.get(rel))).put("after",deletions.contains(rel)?JSONObject.NULL:hash(changes.get(rel))));
+            JSONObject row=new JSONObject().put("path",rel).put("before",hash(originals.get(rel))).put("after",deletions.contains(rel)?JSONObject.NULL:hash(changes.get(rel)));
+            if(!deletions.contains(rel))row.put("staging",rel+".rpm-"+UUID.randomUUID());
+            list.put(row);
         }
         JSONObject manifest=new JSONObject().put("target",target.toString()).put("files",list).put("status","ready").put("committed",new JSONArray());json(job.resolve("transaction.json"),manifest);
         unchanged();committing=true;log("所有验证通过，开始写回 "+paths.size()+" 项（含旧预编译缓存移出）");
@@ -360,7 +444,8 @@ public final class Engine {
                     Files.delete(p);
                 }
                 else{
-                    Path tmp=p.resolveSibling(p.getFileName()+".rpm-"+UUID.randomUUID());
+                    Path tmp=target.resolve(row.getString("staging"));
+                    if(Files.exists(tmp,LinkOption.NOFOLLOW_LINKS))throw new IOException("暂存路径已被占用: "+tmp);
                     run(Arrays.asList("/system/bin/cp","-a",p.toString(),tmp.toString()),30,true);write(tmp,changes.get(rel));
                     if(!hash(bytes(tmp)).equals(row.getString("after")))throw new IOException("暂存哈希错误");Files.move(tmp,p,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);
                 }
@@ -371,23 +456,46 @@ public final class Engine {
         }catch(Exception e){log("写回失败，开始回滚："+e.getMessage());restore(job,toolDir);throw e;}finally{committing=false;}
     }
     public void execute()throws Exception{
+        if(Files.exists(job.resolve("transaction.json"))||Files.exists(job.resolve("original")))throw new IOException("任务目录已有快照或事务，请创建新任务；不能覆盖旧备份");
         Files.createDirectories(job);audit=Files.newBufferedWriter(job.resolve("audit.jsonl"),StandardCharsets.UTF_8);
         try{
+            if(!Arrays.asList("all","vendor_odm").contains(request.optString("write_scope","all")))throw new IOException("未知写入范围");
             target=root(request.getString("target"));source=root(request.getString("source"));
             if(target.startsWith(source)||source.startsWith(target))throw new IOException("目标和来源不能相同或互相包含");
-            dirs.putAll(discover(target));Map<String,String> sd=discover(source);log("扫描五分区策略，来源保持只读");snapshot();Map<String,byte[]> sf=readSource(sd);
+            dirs.putAll(discover(target));Map<String,String> sd=discover(source,false);log("扫描当前目标策略，来源保持只读；写入范围："+request.optString("write_scope","all"));snapshot();Map<String,byte[]> sf=readSource(sd);
+            json(job.resolve("discovery.json"),new JSONObject().put("target",new JSONObject(dirs)).put("source",new JSONObject(sd)).put("source_has_platform",sd.containsKey("system")));
+            if(!sd.containsKey("system"))log("来源没有 system：仅读取来源现有分区；使用目标完整平台校验引用，不复制平台、不导出运行内核");
+            if(request.has("extra")&&!request.optString("extra").isEmpty()){
+                Path extra=Paths.get(request.getString("extra"));canonical(extra);Path snap=job.resolve("extra-snapshot.rule");write(snap,bytes(extra));request.put("extra",snap.toString());
+            }
             PolicySource device=null;
             if(request.optBoolean("live")){
                 log("只读采集手机 system/system_ext/product/vendor/odm 分区文件；不导出运行时策略。若文件已被模块挂载替换，读到的是当前可见文件。");device=readDevicePolicy();
             }
-            boolean debug=originals.keySet().stream().anyMatch(s->s.endsWith("_sepolicy_debug.cil"));
+            boolean debug=!inputs(dirs,originals.keySet(),version,false).equals(inputs(dirs,originals.keySet(),version,true));
             mergeVariant(sd,sf,false,device);if(debug)mergeVariant(sd,sf,true,device);mergeContexts(sd,sf);
             if(device!=null){log("当前手机分区 contexts 快照也进入同一冲突检测流程");mergeContexts(device.dirs,device.files);}
             boolean ok=false;for(int retry=1;retry<=24;retry++){boolean normal=compile(false,retry);boolean dbg=!debug||compile(true,retry);if(normal&&dbg){ok=true;break;}}
             if(!ok)throw new IOException("冲突超过自动处理上限；没有写回");
-            audit.flush();json(job.resolve("summary.json"),new JSONObject().put("counts",new JSONObject(counts)).put("target",target.toString()).put("source",source.toString()).put("vendor_interface",version).put("device_source",device==null?"disabled":"partition_files").put("kernel_policy_read",false).put("boot_guaranteed",false));
-            commit();log("完成。只修改了解包目录，未刷入、未重启。备份与详细报告："+job);
-        }finally{if(audit!=null)audit.close();}
+            commit();log(request.optBoolean("validate_only")?"仅验证完成，目标未写回。候选与详细报告："+job:"完成。只修改了解包目录，未刷入、未重启。备份与详细报告："+job);
+        }finally{
+            if(audit!=null){audit.flush();audit.close();}
+            json(job.resolve("summary.json"),new JSONObject().put("counts",new JSONObject(counts)).put("issues",new JSONObject(reasons)).put("validation",validation)
+                .put("target",String.valueOf(target)).put("source",String.valueOf(source)).put("write_scope",request.optString("write_scope","all"))
+                .put("repair_debug",request.optBoolean("repair_debug",true)).put("validate_only",request.optBoolean("validate_only"))
+                .put("vendor_interface",version).put("neverallow_checked",false).put("kernel_policy_read",false).put("boot_guaranteed",false));
+            if(!reasons.isEmpty())log("有 "+counts.getOrDefault("SKIPPED",0)+" 项跳过、"+counts.getOrDefault("FILTERED",0)+" 项权限筛选；不是全部无损合并，详见 summary.json 和 audit.jsonl");
+        }
+    }
+    static Path stagedPath(Path root,JSONObject row,String field)throws Exception{
+        if(!row.has(field))return null;String rel=row.getString("path"),name=row.getString(field);
+        String prefix=rel+(field.equals("restore_staging")?".rpm-restore-":".rpm-");
+        if(!name.startsWith(prefix)||!name.substring(prefix.length()).matches("[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"))throw new IOException("非法暂存文件记录: "+name);
+        Path p=root.resolve(name).normalize();
+        if(!p.startsWith(root)||!p.getParent().equals(root.resolve(rel).normalize().getParent()))throw new IOException("暂存文件越过目标目录");
+        canonical(p.getParent());
+        if(Files.exists(p,LinkOption.NOFOLLOW_LINKS)){canonical(p);if(!Files.isRegularFile(p,LinkOption.NOFOLLOW_LINKS))throw new IOException("暂存文件不是普通文件: "+p);}
+        return p;
     }
     public static void restore(Path job,Path tools)throws Exception{
         JSONObject m=new JSONObject(text(job.resolve("transaction.json")));Path root=root(m.getString("target"));JSONArray rows=m.getJSONArray("files"),committed=m.getJSONArray("committed");Set<String> changed=new HashSet<>();for(int i=0;i<committed.length();i++)changed.add(committed.getString(i));
@@ -396,11 +504,21 @@ public final class Engine {
             JSONObject r=rows.getJSONObject(i);if(!changed.contains(r.getString("path")))continue;String rel=r.getString("path");Path p=root.resolve(rel).normalize();
             if(!p.startsWith(root)||!rel.matches("(?:system|system_ext|product|vendor|odm)/.*?/selinux/.+"))throw new IOException("非法回滚路径");canonical(p.getParent());
             Path bak=job.resolve("restore").resolve(rel);canonical(bak);if(!hash(bytes(bak)).equals(r.getString("before")))throw new IOException("备份已变化");
+            stagedPath(root,r,"staging");stagedPath(root,r,"restore_staging");
             if(Files.exists(p,LinkOption.NOFOLLOW_LINKS)){canonical(p);String h=hash(bytes(p));if(!h.equals(r.getString("before"))&&(r.isNull("after")||!h.equals(r.getString("after"))))throw new IOException("有用户后续修改，拒绝覆盖: "+p);}
             else if(!r.isNull("after"))throw new IOException("文件被外部移除，停止回滚: "+p);
         }
         Engine runner=new Engine(job,tools,new JSONObject());
-        for(int i=rows.length()-1;i>=0;i--){JSONObject r=rows.getJSONObject(i);String rel=r.getString("path");if(!changed.contains(rel))continue;Path p=root.resolve(rel),bak=job.resolve("restore").resolve(rel),tmp=p.resolveSibling(p.getFileName()+".rpm-restore-"+UUID.randomUUID());runner.run(Arrays.asList("/system/bin/cp","-a",bak.toString(),tmp.toString()),30,true);Files.move(tmp,p,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);if(!hash(bytes(p)).equals(r.getString("before")))throw new IOException("回滚校验失败");}
+        for(int i=rows.length()-1;i>=0;i--){
+            JSONObject r=rows.getJSONObject(i);String rel=r.getString("path");if(!changed.contains(rel))continue;
+            // Only remove exact paths journaled by this transaction, never glob user files.
+            for(String field:Arrays.asList("staging","restore_staging")){Path old=stagedPath(root,r,field);if(old!=null)Files.deleteIfExists(old);}
+            Path p=root.resolve(rel),bak=job.resolve("restore").resolve(rel);String tmpRel=rel+".rpm-restore-"+UUID.randomUUID();
+            r.put("restore_staging",tmpRel);m.put("status","restoring");json(job.resolve("transaction.json"),m);
+            Path tmp=root.resolve(tmpRel);if(Files.exists(tmp,LinkOption.NOFOLLOW_LINKS))throw new IOException("恢复暂存路径已被占用: "+tmp);
+            runner.run(Arrays.asList("/system/bin/cp","-a",bak.toString(),tmp.toString()),30,true);Files.move(tmp,p,StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);
+            if(!hash(bytes(p)).equals(r.getString("before")))throw new IOException("回滚校验失败");
+        }
         m.put("status","restored");json(job.resolve("transaction.json"),m);runner.run(Arrays.asList("/system/bin/sync"),30,true);System.out.println("恢复完成："+root);
     }
 }

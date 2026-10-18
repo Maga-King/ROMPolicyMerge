@@ -1,0 +1,28 @@
+"""Exact-key platform precedence integration, isolated from real ROMs."""
+from integration_tests import *
+import shutil
+
+fixture=OUT/('context-priority-fixture-'+time.strftime('%H%M%S'))
+shutil.copytree(OUT/'small-fixture',fixture)
+putfile(fixture/'target','system/etc/selinux/plat_file_contexts','/existing u:object_r:bar:s0\n')
+putfile(fixture/'source','system/etc/selinux/plat_file_contexts','/incoming u:object_r:bar:s0\n')
+putfile(fixture/'target','system/etc/selinux/plat_property_contexts','persist.existing u:object_r:bar:s0 prefix string\n')
+putfile(fixture/'source','system/etc/selinux/plat_property_contexts','persist.incoming u:object_r:bar:s0 prefix string\n')
+putfile(fixture/'target','vendor/etc/selinux/vendor_file_contexts','/existing u:object_r:foo:s0\n/incoming u:object_r:foo:s0\n/unrelated u:object_r:foo:s0\n')
+putfile(fixture/'target','vendor/etc/selinux/vendor_property_contexts','persist.existing u:object_r:foo:s0 prefix string\npersist.incoming u:object_r:foo:s0 prefix string\n')
+putfile(fixture/'target','vendor/etc/selinux/precompiled_file_contexts','/existing u:object_r:foo:s0\n/incoming u:object_r:foo:s0\n')
+before=digest_tree(fixture/'target'); donor=digest_tree(fixture/'source')
+adb('push',fixture,remote+'/context-priority')
+req('context-priority-job',remote+'/context-priority/target',remote+'/context-priority/source')
+code,s=worker('context-priority-job');check(code==0,'platform priority full merge succeeds')
+final=collect('context-priority/target','context-priority-final')
+vf=(final/'vendor/etc/selinux/vendor_file_contexts').read_text()
+vp=(final/'vendor/etc/selinux/vendor_property_contexts').read_text()
+check('/existing ' not in vf and '/incoming ' not in vf and '/unrelated u:object_r:foo:s0' in vf,'existing and incoming platform labels remove only conflicting vendor file keys')
+check('persist.existing' not in vp and 'persist.incoming' not in vp,'incoming platform prefix is not rejected by duplicate-prefix guard')
+cache=(final/'vendor/etc/selinux/precompiled_file_contexts').read_text()
+check('/existing u:object_r:bar:s0' in cache and '/incoming u:object_r:bar:s0' in cache,'cache matches both target and imported platform labels')
+check(digest_tree(collect('context-priority/source','context-priority-donor-final'))==donor,'platform priority never changes source ROM')
+code,s=worker('context-priority-job','restore');check(code==0,'priority repair rollback succeeds')
+check(digest_tree(collect('context-priority/target','context-priority-restored'))==before,'priority rollback restores all original bytes and caches')
+print('CONTEXT_PRIORITY_INTEGRATION_PASS')

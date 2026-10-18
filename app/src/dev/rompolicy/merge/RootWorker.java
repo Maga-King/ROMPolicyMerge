@@ -23,7 +23,14 @@ public final class RootWorker {
                 if(args[2].equals("restore"))Engine.restore(job,tools);
                 else if(args[2].equals("merge"))new Engine(job,tools,new JSONObject(Engine.text(job.resolve("request.json")))).execute();
                 else throw new IllegalArgumentException("unknown mode");
-                Engine.json(job.resolve("result.json"),new JSONObject().put("success",true).put("mode",args[2]).put("message",args[2].equals("restore")?"恢复完成":"合并验证完成，已按需写回目标解包目录"));
+                String message="恢复完成";
+                if(args[2].equals("merge")){
+                    JSONObject summary=new JSONObject(Engine.text(job.resolve("summary.json")));
+                    JSONObject counts=summary.optJSONObject("counts");
+                    message=summary.optBoolean("validate_only")?"仅验证通过，未写回":"合并验证通过，已按需写回";
+                    if(counts!=null)message+="；跳过 "+counts.optInt("SKIPPED")+" 项，权限筛选 "+counts.optInt("FILTERED")+" 项，转换冲突 "+counts.optInt("COMPILER_CONFLICT")+" 项。详情见报告";
+                }
+                Engine.json(job.resolve("result.json"),new JSONObject().put("success",true).put("mode",args[2]).put("message",message));
             }
         }catch(Throwable t){
             t.printStackTrace(System.out);

@@ -1,4 +1,4 @@
-"""Reproduce the signed 1.0.4 APK using the same payload and ZIP metadata."""
+"""Reproduce the versioned release APK using its pinned payload and ZIP metadata."""
 import hashlib
 import json
 import os
@@ -9,7 +9,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-LOCK = json.loads((ROOT / 'build-config/release-1.0.4.json').read_text(encoding='utf-8'))
+VERSION = ET.parse(ROOT / 'app/AndroidManifest.xml').getroot().attrib['{http://schemas.android.com/apk/res/android}versionName']
+LOCK = json.loads((ROOT / ('build-config/release-' + VERSION + '.json')).read_text(encoding='utf-8'))
 SDK = Path(os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT') or
            Path.home() / 'AppData/Local/Android/Sdk')
 JDK = Path(os.environ.get('JAVA_HOME', 'C:/Program Files/Java/jdk-17')) / 'bin'
